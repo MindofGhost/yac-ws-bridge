@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -15,6 +16,8 @@ import (
 )
 
 const grpcEndpoint = "apigateway-connections.api.cloud.yandex.net:443"
+
+const grpcCallTimeout = 5 * time.Second
 
 type grpcClient struct {
 	once   sync.Once
@@ -36,11 +39,12 @@ func (g *grpcClient) init() {
 	})
 }
 
-func (g *grpcClient) authCtx(iamToken string) context.Context {
+func (g *grpcClient) callCtx(iamToken string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), grpcCallTimeout)
 	md := metadata.New(map[string]string{
 		"authorization": "Bearer " + iamToken,
 	})
-	return metadata.NewOutgoingContext(context.Background(), md)
+	return metadata.NewOutgoingContext(ctx, md), cancel
 }
 
 func (g *grpcClient) Send(connectionId string, data []byte, dataType string, iamToken string) error {
@@ -54,7 +58,9 @@ func (g *grpcClient) Send(connectionId string, data []byte, dataType string, iam
 		t = ws.SendToConnectionRequest_TEXT
 	}
 
-	_, err := g.client.Send(g.authCtx(iamToken), &ws.SendToConnectionRequest{
+	ctx, cancel := g.callCtx(iamToken)
+	defer cancel()
+	_, err := g.client.Send(ctx, &ws.SendToConnectionRequest{
 		ConnectionId: connectionId,
 		Data:         data,
 		Type:         t,
@@ -72,7 +78,9 @@ func (g *grpcClient) Disconnect(connectionId string, iamToken string) error {
 		return g.err
 	}
 
-	_, err := g.client.Disconnect(g.authCtx(iamToken), &ws.DisconnectRequest{
+	ctx, cancel := g.callCtx(iamToken)
+	defer cancel()
+	_, err := g.client.Disconnect(ctx, &ws.DisconnectRequest{
 		ConnectionId: connectionId,
 	})
 	if err != nil {

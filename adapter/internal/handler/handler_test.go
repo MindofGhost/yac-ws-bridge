@@ -1,16 +1,46 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bridge-to-freedom/adapter/internal/config"
 	"github.com/bridge-to-freedom/adapter/internal/protocol"
+	"github.com/bridge-to-freedom/adapter/internal/wsapi"
 	"github.com/gorilla/websocket"
 )
+
+type scriptedWSClient struct {
+	mu              sync.Mutex
+	sendErrors      []error
+	sendCalls       int
+	disconnectCalls int
+}
+
+func (c *scriptedWSClient) Send(string, []byte, string, string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sendCalls++
+	if len(c.sendErrors) == 0 {
+		return nil
+	}
+	err := c.sendErrors[0]
+	c.sendErrors = c.sendErrors[1:]
+	return err
+}
+
+func (c *scriptedWSClient) Disconnect(string, string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disconnectCalls++
+	return nil
+}
 
 func TestCompareSeqUsesYandexReverseChronologicalOrder(t *testing.T) {
 	// Lexicographic comparison itself: digits sort before by value ("10" < "2").
@@ -127,6 +157,107 @@ func TestDataC2TReordersAfterTargetConnected(t *testing.T) {
 	}
 }
 
+func TestSendToClientRetriesExplicitThrottle(t *testing.T) {
+	client := &scriptedWSClient{sendErrors: []error{
+		&wsapi.StatusError{StatusCode: http.StatusTooManyRequests, Operation: "wsSend", ConnectionID: "client-1"},
+		nil,
+	}}
+	h := &Handler{ws: client}
+
+	if err := h.sendToClient("client-1", []byte("data"), "BINARY", "token"); err != nil {
+		t.Fatalf("sendToClient() error = %v; want nil", err)
+	}
+	if client.sendCalls != 2 {
+		t.Fatalf("send calls = %d; want 2", client.sendCalls)
+	}
+}
+
+func TestSendToClientDoesNotRetryAmbiguousFailure(t *testing.T) {
+	client := &scriptedWSClient{sendErrors: []error{errors.New("connection reset"), nil}}
+	h := &Handler{ws: client}
+
+	if err := h.sendToClient("client-1", []byte("data"), "BINARY", "token"); err == nil {
+		t.Fatal("sendToClient() error = nil; want ambiguous failure")
+	}
+	if client.sendCalls != 1 {
+		t.Fatalf("send calls = %d; want 1", client.sendCalls)
+	}
+}
+
+func TestDuplicateClientConnectedKeepsExistingState(t *testing.T) {
+	cfg := &config.Config{}
+	h := New(cfg)
+	defer h.CloseAll()
+	existingCtx, existingCancel := context.WithCancel(context.Background())
+	defer existingCancel()
+	existing := &clientState{cancel: existingCancel, iamToken: "first-token"}
+	h.clients["client-1"] = existing
+
+	h.HandleFrame(protocol.Frame{
+		ClientID: "client-1",
+		Type:     protocol.MsgClientConnected,
+		Payload:  encodeClientConnectedPayload("/duplicate", "", "second-token"),
+	})
+
+	if got := h.clients["client-1"]; got != existing {
+		t.Fatal("duplicate CLIENT_CONNECTED replaced the existing client state")
+	}
+	select {
+	case <-existingCtx.Done():
+		t.Fatal("duplicate CLIENT_CONNECTED cancelled the existing client")
+	default:
+	}
+}
+
+func TestTargetToClientSendFailureClosesClient(t *testing.T) {
+	messageSent := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteMessage(websocket.BinaryMessage, []byte("target data")); err != nil {
+			t.Errorf("write target message: %v", err)
+			return
+		}
+		close(messageSent)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	cfg.Target.URL = "ws" + server.URL[len("http"):]
+	h := New(cfg)
+	defer h.CloseAll()
+	client := &scriptedWSClient{sendErrors: []error{errors.New("ambiguous send failure")}}
+	h.ws = client
+
+	h.HandleFrame(protocol.Frame{
+		ClientID: "client-1",
+		Type:     protocol.MsgClientConnected,
+		Payload:  encodeClientConnectedPayload("/", "", "token"),
+	})
+
+	select {
+	case <-messageSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for target message")
+	}
+	waitForClientRemoval(t, h, "client-1")
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.sendCalls != 1 {
+		t.Fatalf("send calls = %d; want 1", client.sendCalls)
+	}
+	if client.disconnectCalls != 1 {
+		t.Fatalf("disconnect calls = %d; want 1", client.disconnectCalls)
+	}
+}
+
 func waitForTarget(t *testing.T, h *Handler, clientID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -141,6 +272,21 @@ func waitForTarget(t *testing.T, h *Handler, clientID string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("target websocket was not connected")
+}
+
+func waitForClientRemoval(t *testing.T, h *Handler, clientID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		_, exists := h.clients[clientID]
+		h.mu.Unlock()
+		if !exists {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("client was not removed after delivery failure")
 }
 
 func waitForMessage(t *testing.T, ch <-chan string) string {

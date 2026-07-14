@@ -10,6 +10,9 @@ const http = require('http');
 const AUTH_TOKEN = process.env.AUTH_TOKEN;
 const WAKEUP_URL = process.env.ADAPTER_URL || null;
 const FORWARD_HTTP = ['true','1'].includes((process.env.FORWARD_HTTP||'').toLowerCase());
+// Keep individual calls well below the function's 10-second execution limit so
+// a failed fast-path call still leaves time for the synchronous POST fallback.
+const HTTP_TIMEOUT_MS = 2500;
 
 const httpsAgent = new https.Agent({ keepAlive: true });
 const httpAgent = new http.Agent({ keepAlive: true });
@@ -46,8 +49,14 @@ function httpPost(url, headers, body) {
       hostname: p.hostname, port: p.port || (p.protocol === 'https:' ? 443 : 80),
       path: p.pathname + p.search, method: 'POST', agent,
       headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
-    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve({status:res.statusCode,body:d})); });
-    req.on('error', reject);
+    }, res => {
+      let d='';
+      res.on('data',c=>d+=c);
+      res.on('end',()=>{ clearTimeout(timer); resolve({status:res.statusCode,body:d}); });
+      res.on('error', error => { clearTimeout(timer); reject(error); });
+    });
+    const timer = setTimeout(() => req.destroy(new Error(`HTTP POST timed out after ${HTTP_TIMEOUT_MS}ms`)), HTTP_TIMEOUT_MS);
+    req.on('error', error => { clearTimeout(timer); reject(error); });
     req.write(body);
     req.end();
   });
@@ -62,8 +71,14 @@ function httpGet(url, headers) {
       hostname: p.hostname, port: p.port || (p.protocol === 'https:' ? 443 : 80),
       path: p.pathname + p.search, method: 'GET', agent,
       headers: headers || {},
-    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>resolve({status:res.statusCode,body:d})); });
-    req.on('error', reject);
+    }, res => {
+      let d='';
+      res.on('data',c=>d+=c);
+      res.on('end',()=>{ clearTimeout(timer); resolve({status:res.statusCode,body:d}); });
+      res.on('error', error => { clearTimeout(timer); reject(error); });
+    });
+    const timer = setTimeout(() => req.destroy(new Error(`HTTP GET timed out after ${HTTP_TIMEOUT_MS}ms`)), HTTP_TIMEOUT_MS);
+    req.on('error', error => { clearTimeout(timer); reject(error); });
     req.end();
   });
 }
@@ -83,8 +98,18 @@ async function fetchUpstreamConnId() {
   } catch(e) { console.error('fetchUpstreamConnId err:', e.message || e); }
 }
 
+async function refreshUpstreamConnId() {
+  if (_fetchPromise) return _fetchPromise;
+  _fetchPromise = fetchUpstreamConnId();
+  try {
+    await _fetchPromise;
+  } finally {
+    _fetchPromise = null;
+  }
+}
+
 // Fetch upstream connId at module init (YC may pre-spawn instances)
-_fetchPromise = fetchUpstreamConnId();
+refreshUpstreamConnId();
 
 // WS management API - send to a specific connection
 async function wsSend(connId, data, type, token) {
@@ -169,10 +194,14 @@ const FLAG_TEXT=0x01;
 // POST (~30ms, reliable) and let the background fetch populate connId for later.
 async function sendToAdapter(frame, iamToken) {
   if (upstreamConnId) {
-    const st = await wsSend(upstreamConnId, frame, 'BINARY', iamToken);
+    const attemptedConnId = upstreamConnId;
+    const st = await wsSend(attemptedConnId, frame, 'BINARY', iamToken);
     if (st >= 200 && st < 300) return true;
-    console.error('upstream WS send failed, status:', st, 'connId:', upstreamConnId);
-    upstreamConnId = null;
+    console.error('upstream WS send failed, status:', st, 'connId:', attemptedConnId);
+    if ((st === 404 || st === 410) && upstreamConnId === attemptedConnId) {
+      upstreamConnId = null;
+    }
+    refreshUpstreamConnId();
     // Fall through to POST. NOTE: a 2xx wsSend can still be lost if the gateway
     // has not yet reaped a dead upstream socket (no end-to-end ack exists). This
     // window is unavoidable without a client-side sequence/ack layer.
@@ -251,12 +280,10 @@ async function handle(event, context) {
   // --- UPSTREAM (adapter) ---
   if (route === 'upstream') {
     if (ev === 'CONNECT') {
-      upstreamConnId = connId;
-      console.log('upstream connected:', connId);
+      console.log('upstream socket connected, awaiting HELLO:', connId);
       return { statusCode: 200 };
     }
     if (ev === 'MESSAGE') {
-      if (!upstreamConnId) { upstreamConnId = connId; console.log('upstream recovered:', connId); }
       const buf = event.isBase64Encoded ? Buffer.from(event.body,'base64') : Buffer.from(event.body||'');
       const f = decode(buf);
       if (f.type === MSG_HELLO) {
@@ -265,8 +292,16 @@ async function handle(event, context) {
         if (ver !== 1 || tok !== AUTH_TOKEN) {
           return binaryResp(encode('', MSG_HELLO_ERR, 0, '', Buffer.from('auth failed')));
         }
+        upstreamConnId = connId;
         console.log('adapter authenticated, upstream connId:', upstreamConnId);
         return binaryResp(encode('', MSG_HELLO_OK, 0, '', Buffer.from(upstreamConnId || '')));
+      }
+      if (upstreamConnId !== connId) {
+        await refreshUpstreamConnId();
+        if (upstreamConnId !== connId) {
+          console.error('message from unauthenticated upstream socket:', connId);
+          return { statusCode: 401 };
+        }
       }
       if (f.type === MSG_PING) return binaryResp(encode('', MSG_PONG, 0, ''));
       return { statusCode: 200 };

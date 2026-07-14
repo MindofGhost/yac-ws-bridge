@@ -65,6 +65,11 @@ type reorderConfig struct {
 	seqDescending bool
 }
 
+const (
+	clientSendMaxAttempts = 2
+	clientSendRetryDelay  = 100 * time.Millisecond
+)
+
 func New(cfg *config.Config) *Handler {
 	h := &Handler{
 		clients:   make(map[string]*clientState),
@@ -137,6 +142,12 @@ func (h *Handler) onClientConnected(f protocol.Frame) {
 	cs := &clientState{cancel: cancel, iamToken: payload.IAMToken}
 
 	h.mu.Lock()
+	if _, exists := h.clients[f.ClientID]; exists {
+		h.mu.Unlock()
+		cancel()
+		log.Printf("[INFO] duplicate CLIENT_CONNECTED ignored clientID=%s", f.ClientID)
+		return
+	}
 	// Check for messages/disconnect that arrived before this CLIENT_CONNECTED
 	if eb, ok := h.earlyData[f.ClientID]; ok {
 		delete(h.earlyData, f.ClientID)
@@ -176,13 +187,16 @@ func (h *Handler) connectToTarget(ctx context.Context, clientID string, p protoc
 		if resp != nil {
 			log.Printf("[ERROR] target response status=%d proto=%s", resp.StatusCode, resp.Header.Get("Sec-WebSocket-Protocol"))
 		}
-		if cs.iamToken != "" {
+		h.mu.Lock()
+		current, ownsClient := h.clients[clientID]
+		if ownsClient && current == cs {
+			delete(h.clients, clientID)
+			h.closedIDs[clientID] = time.Now()
+		}
+		h.mu.Unlock()
+		if ownsClient && current == cs && cs.iamToken != "" {
 			h.ws.Disconnect(clientID, cs.iamToken)
 		}
-		h.mu.Lock()
-		delete(h.clients, clientID)
-		h.closedIDs[clientID] = time.Now()
-		h.mu.Unlock()
 		return
 	}
 
@@ -191,7 +205,7 @@ func (h *Handler) connectToTarget(ctx context.Context, clientID string, p protoc
 	}
 
 	h.mu.Lock()
-	if _, ok := h.clients[clientID]; !ok {
+	if current, ok := h.clients[clientID]; !ok || current != cs {
 		h.mu.Unlock()
 		conn.Close()
 		return
@@ -289,8 +303,9 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 	defer func() {
 		conn.Close()
 		h.mu.Lock()
-		_, ok := h.clients[clientID]
-		if ok {
+		current, ok := h.clients[clientID]
+		ownsClient := ok && current == cs
+		if ownsClient {
 			delete(h.clients, clientID)
 			h.closedIDs[clientID] = time.Now()
 			if cs.reorderTimer != nil {
@@ -299,7 +314,7 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 			}
 		}
 		h.mu.Unlock()
-		if ok {
+		if ownsClient {
 			log.Printf("[INFO] target disconnected clientID=%s", clientID)
 			if cs.iamToken != "" {
 				h.ws.Disconnect(clientID, cs.iamToken)
@@ -324,12 +339,27 @@ func (h *Handler) readFromTarget(clientID string, conn *websocket.Conn, cs *clie
 
 		// Per-client mutex ensures ordering
 		cs.mu.Lock()
-		sendErr := h.ws.Send(clientID, data, dataType, cs.iamToken)
+		sendErr := h.sendToClient(clientID, data, dataType, cs.iamToken)
 		cs.mu.Unlock()
 		if sendErr != nil {
-			log.Printf("[ERROR] send to client failed clientID=%s err=%v", clientID, sendErr)
+			log.Printf("[ERROR] send to client failed, closing stream clientID=%s err=%v", clientID, sendErr)
+			h.closeClient(clientID, cs, "send to client failed")
+			return
 		}
 	}
+}
+
+func (h *Handler) sendToClient(clientID string, data []byte, dataType, iamToken string) error {
+	var err error
+	for attempt := 1; attempt <= clientSendMaxAttempts; attempt++ {
+		err = h.ws.Send(clientID, data, dataType, iamToken)
+		if err == nil || !wsapi.IsSafeToRetry(err) || attempt == clientSendMaxAttempts {
+			return err
+		}
+		log.Printf("[WARN] transient send to client failure, retrying clientID=%s attempt=%d err=%v", clientID, attempt, err)
+		time.Sleep(clientSendRetryDelay)
+	}
+	return err
 }
 
 func (h *Handler) scheduleFlushLocked(clientID string, cs *clientState) {

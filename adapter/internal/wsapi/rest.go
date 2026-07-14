@@ -2,19 +2,26 @@ package wsapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 const restAPIBase = "https://apigateway-connections.api.cloud.yandex.net/apigateways/websocket/v1/connections"
 
+const restCallTimeout = 5 * time.Second
+
 type restClient struct{}
 
 func (r *restClient) Send(connectionId string, data []byte, dataType string, iamToken string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), restCallTimeout)
+	defer cancel()
+
 	b64 := base64.StdEncoding.EncodeToString(data)
 	body, _ := json.Marshal(map[string]string{
 		"data": b64,
@@ -22,7 +29,7 @@ func (r *restClient) Send(connectionId string, data []byte, dataType string, iam
 	})
 
 	url := fmt.Sprintf("%s/%s:send", restAPIBase, connectionId)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -38,14 +45,17 @@ func (r *restClient) Send(connectionId string, data []byte, dataType string, iam
 
 	if resp.StatusCode >= 300 {
 		log.Printf("wsapi.Send REST failed: status=%d connId=%s body=%s", resp.StatusCode, connectionId, string(respBody))
-		return fmt.Errorf("wsSend status %d for %s", resp.StatusCode, connectionId)
+		return &StatusError{StatusCode: resp.StatusCode, Operation: "wsSend", ConnectionID: connectionId}
 	}
 	return nil
 }
 
 func (r *restClient) Disconnect(connectionId string, iamToken string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), restCallTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("%s/%s:disconnect", restAPIBase, connectionId)
-	req, err := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return err
 	}
@@ -57,5 +67,8 @@ func (r *restClient) Disconnect(connectionId string, iamToken string) error {
 	}
 	defer resp.Body.Close()
 	io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return &StatusError{StatusCode: resp.StatusCode, Operation: "wsDisconnect", ConnectionID: connectionId}
+	}
 	return nil
 }

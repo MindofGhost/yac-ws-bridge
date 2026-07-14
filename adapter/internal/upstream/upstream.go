@@ -23,15 +23,28 @@ type Upstream struct {
 	upstreamConnID string
 }
 
+const helloTimeout = 10 * time.Second
+
 func New(cfg *config.Config, h *handler.Handler) *Upstream {
 	return &Upstream{cfg: cfg, handler: h}
 }
 
 func (u *Upstream) dial(ctx context.Context) (*websocket.Conn, error) {
-	dialer := websocket.Dialer{EnableCompression: false}
-	ws, _, err := dialer.DialContext(ctx, u.cfg.Bridge.URL, nil)
+	deadline := time.Now().Add(helloTimeout)
+	helloCtx, cancel := context.WithTimeout(ctx, helloTimeout)
+	defer cancel()
+	dialer := websocket.Dialer{EnableCompression: false, HandshakeTimeout: helloTimeout}
+	ws, _, err := dialer.DialContext(helloCtx, u.cfg.Bridge.URL, nil)
 	if err != nil {
 		return nil, err
+	}
+	if err := ws.SetWriteDeadline(deadline); err != nil {
+		ws.Close()
+		return nil, fmt.Errorf("set HELLO write deadline: %w", err)
+	}
+	if err := ws.SetReadDeadline(deadline); err != nil {
+		ws.Close()
+		return nil, fmt.Errorf("set HELLO read deadline: %w", err)
 	}
 
 	// HELLO
@@ -61,6 +74,14 @@ func (u *Upstream) dial(ctx context.Context) (*websocket.Conn, error) {
 	if resp.Type != protocol.MsgHelloOK {
 		ws.Close()
 		return nil, fmt.Errorf("unexpected: 0x%02x", resp.Type)
+	}
+	if err := ws.SetWriteDeadline(time.Time{}); err != nil {
+		ws.Close()
+		return nil, fmt.Errorf("clear HELLO write deadline: %w", err)
+	}
+	if err := ws.SetReadDeadline(time.Time{}); err != nil {
+		ws.Close()
+		return nil, fmt.Errorf("clear HELLO read deadline: %w", err)
 	}
 
 	// Store the upstream connection ID returned by the bridge
