@@ -1,0 +1,11 @@
+**
+!adapter-and-helper/
+!adapter-and-helper/**
+!bridge-cloud/
+!bridge-cloud/index.js
+!bridge-cloud/package.json
+!bridge-cloud/build/
+!bridge-cloud/build/**
+adapter-and-helper/dist/
+adapter-and-helper/bin/
+bridge-cloud/build/node_modules/

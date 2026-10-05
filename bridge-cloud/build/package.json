@@ -1,0 +1,9 @@
+{
+  "name": "ghostdata_w_client",
+  "private": true,
+  "scripts": {"build": "node build.cjs"},
+  "devDependencies": {
+    "terser": "5.39.0",
+    "javascript-obfuscator": "4.1.1"
+  }
+}

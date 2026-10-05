@@ -1,4 +1,4 @@
-// Bridge to Freedom v4 — Yandex Cloud Function
+// ghostdata_w_client — Yandex Cloud Function
 // Discovery service: exchanges connection IDs between adapter and helper.
 // Optionally relays helper's stream frames to the adapter (relay mode).
 //

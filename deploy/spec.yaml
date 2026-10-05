@@ -4,60 +4,60 @@ info:
   version: 4.0.0
 
 paths:
-  /_adapter:
+  /673e5bd0110aeef51325abd0:
     x-yc-apigateway-websocket-connect:
       operationId: adapter-connect
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: adapter
     x-yc-apigateway-websocket-message:
       operationId: adapter-message
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: adapter
     x-yc-apigateway-websocket-disconnect:
       operationId: adapter-disconnect
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: adapter
 
-  /_helper:
+  /4bf15c89cc131076305f24b3:
     x-yc-apigateway-websocket-connect:
       operationId: helper-connect
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: helper
     x-yc-apigateway-websocket-message:
       operationId: helper-message
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: helper
     x-yc-apigateway-websocket-disconnect:
       operationId: helper-disconnect
       x-yc-apigateway-integration:
         type: cloud_functions
-        function_id: ${FUNCTION_ID}
+        function_id: d4ecuf7bk41l7m22jjta
         tag: "$latest"
-        service_account_id: ${SERVICE_ACCOUNT_ID}
+        service_account_id: aje4embdjp0tqjadu5r0
         context:
           route: helper

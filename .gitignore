@@ -30,3 +30,9 @@ maui-client/publish
 maui-client-linux/bin
 maui-client-linux/obj
 maui-client-linux/publish
+# Local deployment secrets and generated artifacts
+deploy/adapter.config.yaml
+deploy/helper.config.yaml
+deploy/cloud.env
+deploy/dist/
+bridge-cloud/build/node_modules/

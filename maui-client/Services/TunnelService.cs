@@ -1284,7 +1284,7 @@ public sealed class TunnelService : IDisposable
 
             // Send a token GET so this looks like a real HTTP request on the wire.
             var getReq = System.Text.Encoding.ASCII.GetBytes(
-                "GET / HTTP/1.0\r\nHost: probe.bridge-to-freedom\r\nUser-Agent: btf-maui-probe\r\n\r\n");
+                "GET / HTTP/1.0\r\nHost: ghostdata_w_client\r\n\r\n");
             var dataErr = await SendToPeerAsync(Protocol.Encode(Protocol.MsgData, sid, payload: getReq));
             if (dataErr != null)
             {

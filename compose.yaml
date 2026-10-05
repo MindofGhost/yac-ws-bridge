@@ -1,0 +1,25 @@
+services:
+  adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    image: yac-ws-adapter:local
+    restart: unless-stopped
+    # Linux VPS: target.address=127.0.0.1:1080 reaches the host proxy.
+    network_mode: host
+    dns:
+      - "127.0.0.1"
+    volumes:
+      - ./deploy/adapter.config.yaml:/config/adapter.config.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid
+    stop_grace_period: 15s
+    logging:
+      driver: "journald"
+      options:
+        tag: "{{.Name}}"

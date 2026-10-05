@@ -316,7 +316,6 @@ func handleProbe(sm *streams.Manager, streamID uint32) {
 	}
 
 	body := "HTTP/1.1 200 OK\r\n" +
-		"Server: bridge-to-freedom-adapter\r\n" +
 		"Content-Type: text/plain\r\n" +
 		"Content-Length: 2\r\n" +
 		"Connection: close\r\n" +

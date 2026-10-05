@@ -529,7 +529,7 @@ func tryProbeOnce(
 	}
 
 	// Send a token GET to make this look like a real HTTP request on the wire.
-	getReq := "GET / HTTP/1.0\r\nHost: probe.bridge-to-freedom\r\nUser-Agent: btf-helper-probe\r\n\r\n"
+	getReq := "GET / HTTP/1.0\r\nHost: ghostdata_w_client\r\n\r\n"
 	if err := sm.SendFrame(protocol.Frame{
 		Type:     protocol.MsgData,
 		StreamID: sid,
